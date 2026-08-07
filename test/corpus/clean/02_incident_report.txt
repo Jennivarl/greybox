@@ -1,0 +1,12 @@
+Incident Report — Server Room Temperature Alert
+
+Reported by: Facilities Monitoring
+Date: 2026-06-22
+Location: Data Center, Rack Row 3
+
+Summary: Ambient temperature sensor recorded a spike to 84F at 3:12 AM,
+exceeding the 78F threshold for 22 minutes before the backup cooling
+unit engaged. No hardware faults were logged during the window.
+
+Recommend scheduling maintenance on the primary HVAC unit before the
+next quarterly review.

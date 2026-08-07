@@ -1,0 +1,10 @@
+Product Manual Excerpt — Model X200 Wireless Headphones
+
+System requirements: Bluetooth 5.0 or later, companion app requires
+iOS 15+ or Android 11+.
+
+Setup instructions: press and hold the power button for 3 seconds
+until the LED flashes blue, then open the companion app and select
+"Add Device" to complete pairing.
+
+Battery life is rated at 8 hours per charge under typical use.

@@ -1,0 +1,11 @@
+Customer Support Transcript — Ticket #91045
+
+Customer: Hi, I never received a shipping confirmation for order
+#38821 placed last Tuesday.
+
+Agent: Thanks for reaching out. I can see the order was packed on
+Thursday but the tracking number wasn't emailed due to a sync error
+on our end. I've resent the confirmation to your account email and
+included a $10 credit for the inconvenience.
+
+Customer: Perfect, thank you for the quick help.

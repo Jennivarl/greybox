@@ -1,0 +1,11 @@
+Invoice #5502 — Office Supplies
+
+Client: Northgate Accounting Group
+Amount due: $842.17
+Due date: 2026-08-20
+
+Line items: printer toner (x4, $312.00), copy paper (10 reams, $95.00),
+desk organizers (x6, $180.00), shipping ($255.17).
+
+Payment terms: net 30. Please remit via the portal or mailed check to
+the address on file.

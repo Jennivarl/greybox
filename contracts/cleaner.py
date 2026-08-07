@@ -54,18 +54,28 @@ _IMG_ALT_RE = re.compile(
 )
 
 # Fake role/instruction headers attackers prepend to smuggle a new system
-# prompt: "SYSTEM: ...", "### Instruction\n...", "[INST]...", "Assistant:...".
-# Matches only the label prefix at the start of a line -- the rest of the
-# line is left as ordinary evidence text once the fake authority marker is
-# gone.
+# prompt: "SYSTEM: ...", "### Instruction\n...", "Assistant:...". Matches
+# only the label prefix at the start of a line -- the rest of the line is
+# left as ordinary evidence text once the fake authority marker is gone.
+# Anchored to line start to avoid false positives on ordinary prose that
+# happens to contain "system" or "instructions" (e.g. "System requirements:
+# 4GB RAM", "assembly instructions").
 _FAKE_ROLE_RE = re.compile(
     r"""^[ \t]*"""
     r"""(?:"""
     r"""\#{1,6}\s*(?:system|instructions?)\b[:\s]*"""
-    r"""|\[/?(?:system|inst|instructions)\]\s*:?"""
     r"""|(?:system|assistant|instructions?)\s*:\s*"""
     r""")""",
     re.IGNORECASE | re.MULTILINE,
+)
+
+# Chat-template role brackets attackers splice in anywhere, not just at a
+# line start: "[INST]...[/INST]", "[SYSTEM]...[/SYSTEM]". These markers
+# essentially never occur in ordinary prose, so unlike _FAKE_ROLE_RE this
+# one is intentionally not anchored -- it searches the whole text.
+_FAKE_ROLE_BRACKET_RE = re.compile(
+    r"""\[/?(?:system|inst|instructions)\]""",
+    re.IGNORECASE,
 )
 
 
@@ -119,10 +129,16 @@ def _strip_image_alt_text(text: str, removed: list) -> str:
 
 def _strip_fake_role_labels(text: str, removed: list) -> str:
     matches = _FAKE_ROLE_RE.findall(text)
-    if matches:
-        for m in matches:
-            removed.append(f"fake_role_label:{m.strip()!r}")
-    return _FAKE_ROLE_RE.sub("", text)
+    for m in matches:
+        removed.append(f"fake_role_label:{m.strip()!r}")
+    text = _FAKE_ROLE_RE.sub("", text)
+
+    bracket_matches = _FAKE_ROLE_BRACKET_RE.findall(text)
+    for m in bracket_matches:
+        removed.append(f"fake_role_label:{m!r}")
+    text = _FAKE_ROLE_BRACKET_RE.sub("", text)
+
+    return text
 
 
 def _normalize_unicode(text: str, removed: list) -> str:
