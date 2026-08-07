@@ -87,3 +87,34 @@ def test_empty_response_treated_as_detected():
     verdict = parse_judge_response("", SECRET)
     assert verdict.injection_detected is True
     assert verdict.canary_tripped is False
+
+
+# Regression coverage for a real bug hit on both Bradbury and Studio:
+# gl.nondet.exec_prompt(prompt, response_format="json") has GenVM parse the
+# JSON itself and hand back an already-decoded dict, not a JSON string.
+# parse_judge_response used to assume a str and called .strip() on it,
+# raising AttributeError identically (thus deterministically) on every
+# validator, which surfaced as DETERMINISTIC_VIOLATION / MAJORITY_DISAGREE
+# rather than a normal exception -- there was nothing wrong with the
+# consensus/sandbox layer at all, this was the actual bug.
+def test_parses_dict_response_not_just_string():
+    raw = {"injection_detected": False, "category": "none", "reasoning": "clean"}
+    verdict = parse_judge_response(raw, SECRET)
+    assert verdict.injection_detected is False
+    assert verdict.category == "none"
+    assert verdict.canary_tripped is False
+
+
+def test_dict_response_missing_key_treated_as_detected():
+    raw = {"category": "none"}
+    verdict = parse_judge_response(raw, SECRET)
+    assert verdict.injection_detected is True
+    assert verdict.category == "malformed_judge_response"
+
+
+def test_dict_response_canary_trip_detected_via_stringified_values():
+    raw = {"injection_detected": False, "category": "none", "reasoning": SECRET}
+    verdict = parse_judge_response(raw, SECRET)
+    assert verdict.canary_tripped is True
+    assert verdict.injection_detected is True
+    assert verdict.category == "hidden_instruction"

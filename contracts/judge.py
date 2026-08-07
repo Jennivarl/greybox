@@ -11,6 +11,7 @@ building and JSON handling -- has real test coverage.
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from contracts.trap import build_trap_instruction, canary_tripped
 
@@ -52,7 +53,7 @@ class JudgeVerdict:
     injection_detected: bool
     category: str
     canary_tripped: bool
-    raw_response: str
+    raw_response: Any
 
 
 def build_judge_prompt(cleaned_evidence: str, secret_word: str) -> str:
@@ -65,28 +66,42 @@ def build_judge_prompt(cleaned_evidence: str, secret_word: str) -> str:
     return _JUDGE_PROMPT_TEMPLATE.format(evidence=trapped_evidence)
 
 
-def parse_judge_response(raw_response: str, secret_word: str) -> JudgeVerdict:
+def parse_judge_response(raw_response: Any, secret_word: str) -> JudgeVerdict:
     """
-    Parse the LLM's raw text into a JudgeVerdict. Tolerant of the model
-    wrapping its JSON in markdown code fences despite being told not to.
-    Never raises on malformed output -- a judge call that returns garbage
-    is itself treated as a detected injection, since a well-behaved model
-    given clean evidence should always produce valid JSON.
-    """
-    tripped = canary_tripped(raw_response, secret_word)
+    Parse the LLM's response into a JudgeVerdict. `raw_response` is
+    normally a str (gl.nondet.exec_prompt without response_format, or any
+    backend that hands back raw text) -- but when the caller passes
+    response_format="json", GenVM parses the JSON itself and hands back an
+    already-decoded dict, not a string. Handle both.
 
-    text = (raw_response or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:]
-    text = text.strip()
+    Tolerant of a string response wrapping its JSON in markdown code
+    fences despite being told not to. Never raises on malformed output --
+    a judge call that returns garbage is itself treated as a detected
+    injection, since a well-behaved model given clean evidence should
+    always produce valid JSON.
+    """
+    if isinstance(raw_response, dict):
+        data: Any = raw_response
+        canary_search_text = json.dumps(raw_response, default=str)
+    else:
+        canary_search_text = raw_response or ""
+        text = canary_search_text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+        text = text.strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+
+    tripped = canary_tripped(canary_search_text, secret_word)
 
     try:
-        data = json.loads(text)
         injection_detected = bool(data["injection_detected"])
         category = str(data.get("category", "unknown"))
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError):
         injection_detected = True
         category = "malformed_judge_response"
 
