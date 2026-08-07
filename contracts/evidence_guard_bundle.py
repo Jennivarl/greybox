@@ -18,9 +18,6 @@ import hashlib
 import json
 
 
-import random
-
-
 import re
 
 
@@ -208,25 +205,26 @@ _TOKEN_LENGTH = 10
 _TOKEN_PREFIX = "XG-"
 
 
-def derive_seed(*parts: bytes) -> int:
+def derive_seed(*parts: bytes) -> bytes:
     """
     Combine several byte-strings (e.g. sender address, contract address,
-    chain id, evidence text) into one deterministic integer seed.
+    chain id, evidence text) into one deterministic 32-byte digest.
     """
     material = b"\x00".join(parts)
-    digest = hashlib.sha256(material).digest()
-    return int.from_bytes(digest[:8], "big")
+    return hashlib.sha256(material).digest()
 
 
-def generate_secret_word(seed: int) -> str:
+def generate_secret_word(seed: bytes) -> str:
     """
-    Deterministically derive a per-call canary token from `seed`.
-    Same seed always yields the same word; different seeds diverge
-    immediately (this is not meant to be brute-forceable in the other
-    direction -- see module docstring for the actual threat this defends).
+    Deterministically derive a per-call canary token from `seed` (the
+    digest returned by derive_seed). Same seed always yields the same
+    word; different seeds diverge immediately (this is not meant to be
+    brute-forceable in the other direction -- see module docstring for
+    the actual threat this defends).
     """
-    rng = random.Random(seed)
-    body = "".join(rng.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_LENGTH))
+    body = "".join(
+        _TOKEN_ALPHABET[b % len(_TOKEN_ALPHABET)] for b in seed[:_TOKEN_LENGTH]
+    )
     return f"{_TOKEN_PREFIX}{body}"
 
 

@@ -15,36 +15,41 @@ The word must be:
   - Different per call, so it can't be hardcoded into a permanent bypass
     by anyone who has read this (public) contract source.
 
-Pure Python, no GenLayer imports -- fully unit-testable standalone.
+Pure Python, no GenLayer imports -- fully unit-testable standalone. Uses
+only hashlib, deliberately not the `random` module: GenVM's determinism
+checker flagged a `random.Random(seed)` call here as a DETERMINISTIC_
+VIOLATION during live testing on Bradbury, even though it was explicitly
+seeded and reproducible in plain Python. Safer to derive the token straight
+from hash-digest bytes than to argue with the sandbox about it.
 """
 
 import hashlib
-import random
 
 _TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _TOKEN_LENGTH = 10
 _TOKEN_PREFIX = "XG-"
 
 
-def derive_seed(*parts: bytes) -> int:
+def derive_seed(*parts: bytes) -> bytes:
     """
     Combine several byte-strings (e.g. sender address, contract address,
-    chain id, evidence text) into one deterministic integer seed.
+    chain id, evidence text) into one deterministic 32-byte digest.
     """
     material = b"\x00".join(parts)
-    digest = hashlib.sha256(material).digest()
-    return int.from_bytes(digest[:8], "big")
+    return hashlib.sha256(material).digest()
 
 
-def generate_secret_word(seed: int) -> str:
+def generate_secret_word(seed: bytes) -> str:
     """
-    Deterministically derive a per-call canary token from `seed`.
-    Same seed always yields the same word; different seeds diverge
-    immediately (this is not meant to be brute-forceable in the other
-    direction -- see module docstring for the actual threat this defends).
+    Deterministically derive a per-call canary token from `seed` (the
+    digest returned by derive_seed). Same seed always yields the same
+    word; different seeds diverge immediately (this is not meant to be
+    brute-forceable in the other direction -- see module docstring for
+    the actual threat this defends).
     """
-    rng = random.Random(seed)
-    body = "".join(rng.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_LENGTH))
+    body = "".join(
+        _TOKEN_ALPHABET[b % len(_TOKEN_ALPHABET)] for b in seed[:_TOKEN_LENGTH]
+    )
     return f"{_TOKEN_PREFIX}{body}"
 
 

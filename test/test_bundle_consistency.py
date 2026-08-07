@@ -11,6 +11,7 @@ If someone edits contracts/cleaner.py and forgets to run
 `python deploy/build_bundle.py`, this is what catches it.
 """
 
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -135,3 +136,28 @@ def test_bundle_corpus_matches_source_module():
         for path in sorted((corpus_dir / sub).glob("*.txt")):
             text = path.read_text(encoding="utf-8")
             assert bundle.clean(text).removed == source_clean(text).removed
+
+
+# GenVM's determinism sandbox rejected `random.Random(seed)` in the
+# deployed contract as DETERMINISTIC_VIOLATION -- even though it was
+# explicitly seeded -- and the fix (dropping `random` from trap.py) was
+# initially undermined by deploy/build_bundle.py hardcoding `import random`
+# in its shared header regardless of whether the source modules still used
+# it, so the "fixed" bundle kept shipping the import anyway. This test
+# pins the actual deployed artifact against modules known to be risky in
+# GenVM's deterministic execution path, so that class of bug can't silently
+# recur through either the source modules or the bundler's own header list.
+_RISKY_DETERMINISM_IMPORTS = ("random", "os", "time")
+
+
+def test_bundle_has_no_risky_nondeterministic_imports():
+    bundle_source = BUNDLE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(bundle_source, filename=str(BUNDLE_PATH))
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+    risky = found & set(_RISKY_DETERMINISM_IMPORTS)
+    assert not risky, f"bundle imports risky module(s): {risky}"
