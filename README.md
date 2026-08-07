@@ -11,9 +11,11 @@ Full build plan: see `GREYBOX.md` in [genlayer-school](https://github.com/Jenniv
 - [x] Stage 2 -- the cleaner (plain Python, no LLM, no consensus cost): [`contracts/cleaner.py`](contracts/cleaner.py), tested in [`test/test_cleaner.py`](test/test_cleaner.py)
 - [x] Stage 3 -- the trap (per-tx seeded canary word): [`contracts/trap.py`](contracts/trap.py), tested in [`test/test_trap.py`](test/test_trap.py)
 - [x] Stage 4 -- the judge call, prompt/response handling: [`contracts/judge.py`](contracts/judge.py), tested in [`test/test_judge.py`](test/test_judge.py)
-- [x] Stage 5 -- the contract wrapper: [`contracts/evidence_guard.py`](contracts/evidence_guard.py) -- wires the above into a `gl.Contract` with `TreeMap` storage. Needs the GenVM runtime to execute, so **not yet verified against Studio/Bradbury** -- do that before relying on it. One specific unknown flagged in the code: whether a `DynArray[str]` storage field accepts a plain Python list at construction or needs `gl.storage.inmem_allocate`.
-- [x] Stage 6 -- the attack corpus: 13 attacks + 5 clean controls in [`test/corpus/`](test/corpus), scored in [`test/test_corpus.py`](test/test_corpus.py). This only exercises the cleaner offline -- the canary trap and judge verdict need a live LLM and aren't covered by this suite. See [Corpus results](#corpus-results) below.
-- [ ] Stage 7 -- deploy to testnet Bradbury
+- [x] Stage 5 -- the contract wrapper: [`contracts/evidence_guard.py`](contracts/evidence_guard.py) -- wires the above into a `gl.Contract` with `TreeMap` storage.
+- [x] Stage 6 -- the attack corpus: 13 attacks + 6 clean controls in [`test/corpus/`](test/corpus), scored in [`test/test_corpus.py`](test/test_corpus.py). This only exercises the cleaner offline -- the canary trap and judge verdict need a live LLM and aren't covered by this suite. See [Corpus results](#corpus-results) below.
+- [~] Stage 7 -- deploy to testnet Bradbury: **deployed**, `__init__` confirmed working (`FINISHED_WITH_RETURN`) at [`0x93BD0DEB7241dA487cf938ff175C42Ea76485E3e`](https://explorer-bradbury.genlayer.com/address/0x93BD0DEB7241dA487cf938ff175C42Ea76485E3e). **Not yet verified end-to-end**: two `check()` calls both hit `LEADER_TIMEOUT` before reaching the LLM step (Bradbury validators each run their own model config, so a slow/misconfigured validator in a rotation can time out the round) -- this looks like testnet-side flakiness, not a contract bug, but it means the `DynArray[str]` storage-construction question below is still genuinely open.
+
+One unknown remains unresolved because of the above: whether a `DynArray[str]` storage field (`GuardRecord.removed_items`) accepts a plain Python list at construction or needs `gl.storage.inmem_allocate` -- `__init__` never touches that field, so deployment succeeding doesn't confirm it. Needs a `check()` or `screen_and_record()` call to actually finish before this is verified.
 
 ## The cleaner
 
@@ -34,9 +36,20 @@ pip install -r requirements.txt
 python -m pytest test/ -v
 ```
 
+## Deploying: the bundle
+
+GenVM deploys a single file's raw bytes as the contract code -- it has no access to sibling files, so `contracts/evidence_guard.py` as written (`from contracts.cleaner import clean`, etc.) fails on-chain with `ModuleNotFoundError: No module named 'contracts'` even though it imports fine locally and under pytest. `deploy/build_bundle.py` inlines `cleaner.py`, `trap.py`, `judge.py`, and `evidence_guard.py` into one self-contained file, `contracts/evidence_guard_bundle.py`, which is what actually gets deployed:
+
+```bash
+python deploy/build_bundle.py
+genlayer deploy --contract contracts/evidence_guard_bundle.py
+```
+
+`test/test_bundle_consistency.py` guards against the bundle drifting from the tested source modules (it executes the bundle with stubbed-out `genlayer` symbols and re-runs the cleaner/trap/judge assertions against the bundle's own copies) -- if you edit `cleaner.py`/`trap.py`/`judge.py` and forget to rebuild, this is what catches it.
+
 ## Corpus results
 
-`test/corpus/attacks/` has 13 evidence documents, each carrying one hidden-instruction vector; `test/corpus/clean/` has 5 ordinary documents that must pass through untouched. Scored by running every fixture through the cleaner alone (offline, no LLM):
+`test/corpus/attacks/` has 13 evidence documents, each carrying one hidden-instruction vector; `test/corpus/clean/` has 6 ordinary documents that must pass through untouched (one of which is a documented known false positive, not a pass). Scored by running every fixture through the cleaner alone (offline, no LLM):
 
 | Vector | Caught by cleaner? |
 |---|---|
@@ -54,9 +67,11 @@ python -m pytest test/ -v
 | Instruction split one character per line | **No** -- same reason |
 | Instruction in a different language | **No** -- same reason |
 
-**10 / 13 attacks caught by the cleaner alone, 0 / 5 false positives on clean controls.** The 3 misses are by design, not bugs: the cleaner only strips formatting-based hiding tricks. Catching semantically-hidden instructions is what Stage 3 (the canary trap) and Stage 4 (the judge's own reading of the evidence) are for -- neither can be exercised without a live LLM call, so this table only proves the free, pre-LLM layer of defense. Run `python -m pytest test/test_corpus.py -v` to reproduce.
+**10 / 13 attacks caught by the cleaner alone, 5 / 6 clean controls pass through untouched.** The 3 misses are by design, not bugs: the cleaner only strips formatting-based hiding tricks. Catching semantically-hidden instructions is what Stage 3 (the canary trap) and Stage 4 (the judge's own reading of the evidence) are for -- neither can be exercised without a live LLM call, so this table only proves the free, pre-LLM layer of defense. Run `python -m pytest test/test_corpus.py -v` to reproduce.
 
 One fixture (`09_inst_bracket.txt`) caught a real bug during development: the fake-role-label regex only matched a label sitting alone at the start of a line, missing `[INST]` spliced mid-sentence -- which is how a real attacker would actually place it. Fixed by giving bracket-style markers (`[INST]`, `[/INST]`, `[SYSTEM]`, `[/SYSTEM]`) their own unanchored search, while keeping the colon-style labels (`SYSTEM:`, `Instructions:`) anchored to line start to avoid flagging ordinary sentences like "System requirements: 4GB RAM."
+
+That same anchoring is also a **known false positive**, caught by `06_form_instructions_header.txt`: a claim form whose own section header is literally `Instructions: Complete all sections in black ink...` gets that label stripped, because it's indistinguishable at the regex level from an attacker's injected `Instructions:` line -- both are "the label alone at the start of a line, followed by a colon." Low severity (it drops a label, not evidence content, and doesn't push the judge toward a wrong verdict) but real, so it's pinned by `test_known_false_positive_matches_documented_behavior` instead of silently passing or silently failing the corpus's zero-false-positive bar.
 
 ## Requirements
 
