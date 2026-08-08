@@ -4,8 +4,6 @@
 
 Evidence Guard is a Python Intelligent Contract on GenLayer. It screens evidence for hidden instructions, a form of prompt injection, before an AI judge contract ever reads that evidence. Other contracts import it, hand it raw evidence, and get back a verdict they can trust. Optionally, that verdict is written to chain as a permanent, provable record.
 
-The full build plan and design notes live in `GREYBOX.md`, kept in the author's [genlayer-school](https://github.com/Jennivarl/genlayer-school) repository alongside the rest of their GenLayer work.
-
 ## Why this belongs on GenLayer
 
 Evidence Guard does not decide whether a piece of evidence is factually true. It decides whether the evidence itself has been tampered with in a way meant to manipulate whatever AI reads it next. That is a property of the text itself, so there is no external fact to fetch or verify against.
