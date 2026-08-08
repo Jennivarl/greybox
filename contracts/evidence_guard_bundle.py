@@ -442,7 +442,7 @@ class EvidenceGuard(gl.Contract):
         belongs on GenLayer rather than a normal server.
         """
         if evidence_id in self.records:
-            raise Exception(f"Evidence '{evidence_id}' already screened")
+            raise gl.vm.UserError(f"Evidence '{evidence_id}' already screened")
 
         record = self._screen(evidence)
         self.records[evidence_id] = record
