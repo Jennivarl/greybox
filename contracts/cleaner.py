@@ -177,3 +177,50 @@ def clean(text: str) -> CleanResult:
     cleaned = cleaned.strip()
 
     return CleanResult(cleaned_text=cleaned, removed=removed)
+
+
+# Removal categories that are conclusive on their own. Content deliberately
+# made invisible to a human reader has no legitimate explanation: nobody
+# writes white-on-white body text, zero-width characters between letters, or
+# bidi overrides by accident. If any of these fire, the evidence was
+# tampered with, and that is a deterministic fact that needs no model to
+# confirm it.
+_CONCLUSIVE_REMOVAL_CATEGORIES = frozenset(
+    [
+        "hidden_styled_content",
+        "zero_width_chars",
+        "invisible_control_chars",
+    ]
+)
+
+# Categories that are worth telling the judge about but are not proof on
+# their own, because each has a genuine benign use: HTML comments hold real
+# editorial notes, alt text is an accessibility feature, and "Instructions:"
+# is an ordinary section header on a form.
+_ADVISORY_REMOVAL_CATEGORIES = frozenset(
+    [
+        "html_comments",
+        "image_alt_text",
+        "fake_role_label",
+    ]
+)
+
+
+def _category_of(removal: str) -> str:
+    return removal.split(":", 1)[0]
+
+
+def conclusive_removals(removed: list) -> list:
+    """
+    The subset of `removed` that proves deliberate concealment by itself,
+    with no language model involved.
+    """
+    return [r for r in removed if _category_of(r) in _CONCLUSIVE_REMOVAL_CATEGORIES]
+
+
+def advisory_removals(removed: list) -> list:
+    """
+    The subset of `removed` that is suspicious but has legitimate uses, so
+    it is passed to the judge as context rather than treated as proof.
+    """
+    return [r for r in removed if _category_of(r) in _ADVISORY_REMOVAL_CATEGORIES]

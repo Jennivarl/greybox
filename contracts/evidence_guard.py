@@ -1,20 +1,31 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 """
-Stage 5: EvidenceGuard, the Intelligent Contract wrapper.
+Stage 5: GREYBOX, the Intelligent Contract wrapper.
 
 Other contracts import this one, hand it evidence, and get back a verdict on
 whether that evidence contains hidden instructions aimed at whatever LLM
 reads it next -- optionally with a permanent, provable on-chain record.
 
+Three independent signals feed one verdict, in descending order of
+certainty:
+
+  1. What the deterministic cleaner had to remove. Content deliberately
+     made invisible to a human reader settles the question outright, with
+     no model involved. This binding is the point: stripping an attack and
+     then asking a model to judge the sanitized leftovers would hide the
+     strongest evidence the contract has.
+  2. Whether the canary leaked. A model that obeys an instruction planted
+     in text it was handed as data cannot be trusted to screen that same
+     submission, so the result fails closed.
+  3. The model's own reading of the cleaned evidence, which stands alone
+     only when neither of the above fires.
+
 This file needs the GenVM runtime to execute (it imports `genlayer`, which
 only exists inside that runtime) so it isn't unit-tested directly. The parts
-that matter for correctness -- the cleaner, the trap, and the prompt/response
-handling -- live in cleaner.py, trap.py, and judge.py and are fully covered
-by test/test_cleaner.py, test/test_trap.py, and test/test_judge.py. This
-file is thin wiring on top of those, verified against the GenLayer docs'
-current API (gl.nondet.exec_prompt, gl.vm.run_nondet_unsafe, TreeMap,
-@allow_storage) but not yet exercised against a live GenVM -- do that via
-Studio before deploying to Bradbury.
+that matter for correctness -- the cleaner, the trap, and the prompt,
+response, and verdict-combination logic -- live in cleaner.py, trap.py, and
+judge.py and are covered by their own tests plus test/test_screening.py,
+which exercises the full pipeline end to end against a stubbed model.
 """
 
 import hashlib
@@ -22,9 +33,14 @@ from dataclasses import dataclass
 
 from genlayer import *
 
-from contracts.cleaner import clean
-from contracts.judge import build_judge_prompt, parse_judge_response
-from contracts.trap import derive_seed, generate_secret_word
+from contracts.cleaner import advisory_removals, clean, conclusive_removals
+from contracts.judge import (
+    build_canary_prompt,
+    build_detection_prompt,
+    combine_verdict,
+    parse_judge_response,
+)
+from contracts.trap import canary_tripped, derive_seed, generate_secret_word
 
 
 @allow_storage
@@ -32,6 +48,7 @@ from contracts.trap import derive_seed, generate_secret_word
 class GuardRecord:
     injection_detected: bool
     canary_tripped: bool
+    conclusive_tampering: bool
     category: str
     evidence_hash: str
     removed_items: DynArray[str]
@@ -55,17 +72,25 @@ class EvidenceGuard(gl.Contract):
 
     def _screen(self, evidence: str) -> GuardRecord:
         cleaned = clean(evidence)
+        conclusive = conclusive_removals(cleaned.removed)
+        advisory = advisory_removals(cleaned.removed)
+
         seed = derive_seed(*self._seed_material(cleaned.cleaned_text))
         secret_word = generate_secret_word(seed)
-        prompt = build_judge_prompt(cleaned.cleaned_text, secret_word)
+        detection_prompt = build_detection_prompt(cleaned.cleaned_text, advisory)
+        canary_prompt = build_canary_prompt(cleaned.cleaned_text, secret_word)
 
         def leader_fn():
-            raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            verdict = parse_judge_response(raw, secret_word)
+            detection_raw = gl.nondet.exec_prompt(
+                detection_prompt, response_format="json"
+            )
+            detection = parse_judge_response(detection_raw)
+            canary_raw = gl.nondet.exec_prompt(canary_prompt)
+            leaked = canary_tripped(canary_raw, secret_word)
             return {
-                "injection_detected": verdict.injection_detected,
-                "canary_tripped": verdict.canary_tripped,
-                "category": verdict.category,
+                "injection_detected": detection.injection_detected,
+                "category": detection.category,
+                "canary_leaked": leaked,
             }
 
         def validator_fn(leaders_res) -> bool:
@@ -75,20 +100,29 @@ class EvidenceGuard(gl.Contract):
             return (
                 my_result["injection_detected"]
                 == leaders_res.calldata["injection_detected"]
-                and my_result["canary_tripped"]
-                == leaders_res.calldata["canary_tripped"]
+                and my_result["canary_leaked"]
+                == leaders_res.calldata["canary_leaked"]
             )
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+        verdict = combine_verdict(
+            result["injection_detected"],
+            result["category"],
+            result["canary_leaked"],
+            conclusive,
+            cleaned.removed,
+        )
 
         evidence_hash = "0x" + hashlib.sha256(
             cleaned.cleaned_text.encode("utf-8")
         ).hexdigest()
 
         return GuardRecord(
-            injection_detected=result["injection_detected"],
-            canary_tripped=result["canary_tripped"],
-            category=result["category"],
+            injection_detected=verdict.injection_detected,
+            canary_tripped=verdict.canary_tripped,
+            conclusive_tampering=verdict.conclusive_tampering,
+            category=verdict.category,
             evidence_hash=evidence_hash,
             removed_items=cleaned.removed,
             submitted_by=gl.message.sender_address,
@@ -104,6 +138,7 @@ class EvidenceGuard(gl.Contract):
         return {
             "injection_detected": record.injection_detected,
             "canary_tripped": record.canary_tripped,
+            "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,
             "evidence_hash": record.evidence_hash,
             "removed_items": list(record.removed_items),
@@ -125,6 +160,7 @@ class EvidenceGuard(gl.Contract):
         return {
             "injection_detected": record.injection_detected,
             "canary_tripped": record.canary_tripped,
+            "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,
             "evidence_hash": record.evidence_hash,
             "removed_items": list(record.removed_items),
@@ -136,6 +172,7 @@ class EvidenceGuard(gl.Contract):
         return {
             "injection_detected": record.injection_detected,
             "canary_tripped": record.canary_tripped,
+            "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,
             "evidence_hash": record.evidence_hash,
             "removed_items": list(record.removed_items),

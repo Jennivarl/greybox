@@ -114,17 +114,34 @@ def test_bundle_judge_parsing_matches_source_module():
     bundle = _load_bundle_module()
     from contracts.judge import parse_judge_response as source_parse
 
-    secret = "XG-TESTTOKEN01"
-    raw = '{"injection_detected": false, "category": "none"}'
-    bundled_verdict = bundle.parse_judge_response(raw, secret)
-    source_verdict = source_parse(raw, secret)
-    assert bundled_verdict.injection_detected == source_verdict.injection_detected
-    assert bundled_verdict.category == source_verdict.category
+    for raw in [
+        '{"injection_detected": false, "category": "none"}',
+        '{"injection_detected": true, "category": "fake_role"}',
+        "not json at all",
+    ]:
+        bundled_verdict = bundle.parse_judge_response(raw)
+        source_verdict = source_parse(raw)
+        assert bundled_verdict.injection_detected == source_verdict.injection_detected
+        assert bundled_verdict.category == source_verdict.category
 
-    raw_tripped = f"here it is: {secret}"
-    bundled_tripped = bundle.parse_judge_response(raw_tripped, secret)
-    source_tripped = source_parse(raw_tripped, secret)
-    assert bundled_tripped.canary_tripped == source_tripped.canary_tripped is True
+
+def test_bundle_verdict_combination_matches_source_module():
+    bundle = _load_bundle_module()
+    from contracts.judge import combine_verdict as source_combine
+
+    cases = [
+        (False, "none", False, [], []),
+        (False, "none", True, [], []),
+        (False, "none", False, ["hidden_styled_content:'x'"], ["hidden_styled_content:'x'"]),
+        (True, "encoded_payload", False, [], []),
+    ]
+    for case in cases:
+        bundled = bundle.combine_verdict(*case)
+        source = source_combine(*case)
+        assert bundled.injection_detected == source.injection_detected
+        assert bundled.category == source.category
+        assert bundled.conclusive_tampering == source.conclusive_tampering
+        assert bundled.canary_tripped == source.canary_tripped
 
 
 def test_bundle_corpus_matches_source_module():
@@ -148,6 +165,32 @@ def test_bundle_corpus_matches_source_module():
 # GenVM's deterministic execution path, so that class of bug can't silently
 # recur through either the source modules or the bundler's own header list.
 _RISKY_DETERMINISM_IMPORTS = ("random", "os", "time")
+
+
+def test_bundle_carries_no_local_imports():
+    """
+    GenVM deploys one file with no sibling modules, so any surviving
+    `from contracts.X import ...` fails on chain with ModuleNotFoundError.
+    The bundler used to match import lines by exact string and silently
+    stopped stripping them whenever an import was edited.
+    """
+    source = BUNDLE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(BUNDLE_PATH))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith(
+                "contracts"
+            ), f"local import survived into the bundle: {node.module}"
+
+
+def test_bundle_defines_every_name_it_uses_at_module_level():
+    """
+    Catches the mirror of the above: an import stripped from a source
+    module and never re-added to the bundle's shared header. Loading the
+    module executes every top-level statement and evaluates annotations,
+    so a missing import surfaces as NameError here rather than on chain.
+    """
+    _load_bundle_module()
 
 
 def test_bundle_has_no_risky_nondeterministic_imports():

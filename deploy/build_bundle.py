@@ -27,18 +27,22 @@ DEPENDS_HEADER = (
 # Import/local-cross-import lines to drop from each source file: they're
 # either merged into the shared header once, or become unnecessary once
 # everything lives in one module namespace.
-DROP_LINES = {
+#
+# Matched structurally rather than by exact string. An earlier version kept
+# a literal set of import lines here, which silently stopped matching the
+# moment an import was edited: the cross-module imports then survived into
+# the bundle and it failed on chain with ModuleNotFoundError. Anything that
+# imports from `contracts.` is local and must never reach the bundle.
+_LOCAL_IMPORT_PREFIX = "from contracts."
+_HOISTED_IMPORT_LINES = {
     "import re",
     "import json",
     "import hashlib",
     "import unicodedata",
     "from dataclasses import dataclass, field",
     "from dataclasses import dataclass",
+    "from typing import Any",
     "from genlayer import *",
-    "from contracts.cleaner import clean",
-    "from contracts.trap import build_trap_instruction, canary_tripped",
-    "from contracts.judge import build_judge_prompt, parse_judge_response",
-    "from contracts.trap import derive_seed, generate_secret_word",
 }
 
 
@@ -59,7 +63,33 @@ def strip_leading_docstring(source: str) -> str:
 
 
 def strip_known_import_lines(source: str) -> str:
-    kept = [line for line in source.split("\n") if line.strip() not in DROP_LINES]
+    """
+    Remove imports that must not survive into the bundle: the stdlib ones
+    hoisted into the shared header, and every local `from contracts.`
+    import, including the parenthesized multi-line form.
+    """
+    kept = []
+    skipping_multiline_local = False
+
+    for line in source.split("\n"):
+        stripped = line.strip()
+
+        if skipping_multiline_local:
+            if stripped.endswith(")"):
+                skipping_multiline_local = False
+            continue
+
+        if stripped.startswith(_LOCAL_IMPORT_PREFIX):
+            # Parenthesized form spans until the closing paren.
+            if "(" in stripped and not stripped.endswith(")"):
+                skipping_multiline_local = True
+            continue
+
+        if stripped in _HOISTED_IMPORT_LINES:
+            continue
+
+        kept.append(line)
+
     return "\n".join(kept)
 
 
@@ -100,6 +130,7 @@ def main() -> None:
         "import re",
         "import unicodedata",
         "from dataclasses import dataclass, field",
+        "from typing import Any",
         "",
         "from genlayer import *",
         "",
