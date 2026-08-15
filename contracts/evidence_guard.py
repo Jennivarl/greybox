@@ -6,19 +6,30 @@ Other contracts import this one, hand it evidence, and get back a verdict on
 whether that evidence contains hidden instructions aimed at whatever LLM
 reads it next -- optionally with a permanent, provable on-chain record.
 
-Three independent signals feed one verdict, in descending order of
-certainty:
+Three independent signals produce two separate answers.
+
+Two of the signals speak to the evidence and set `injection_detected`:
 
   1. What the deterministic cleaner had to remove. Content deliberately
      made invisible to a human reader settles the question outright, with
      no model involved. This binding is the point: stripping an attack and
      then asking a model to judge the sanitized leftovers would hide the
      strongest evidence the contract has.
-  2. Whether the canary leaked. A model that obeys an instruction planted
-     in text it was handed as data cannot be trusted to screen that same
-     submission, so the result fails closed.
-  3. The model's own reading of the cleaned evidence, which stands alone
-     only when neither of the above fires.
+  2. The model's own reading of the cleaned evidence, which stands on its
+     own when the cleaner found nothing conclusive.
+
+The third speaks to the screener, not the submission, and sets
+`judge_reliable`:
+
+  3. Whether the canary leaked. A model that obeys an instruction planted
+     in text it was handed as data cannot be trusted to have spotted one
+     it was told to ignore, so a clean reading from it is weak evidence
+     of a clean document.
+
+Keeping these apart matters in practice. On Bradbury the validator models
+obey the planted instruction almost every time, so folding the canary
+into `injection_detected` marked every clean submission an attack. Split,
+the caller gets both facts and picks its own policy.
 
 This file needs the GenVM runtime to execute (it imports `genlayer`, which
 only exists inside that runtime) so it isn't unit-tested directly. The parts
@@ -37,6 +48,7 @@ from contracts.cleaner import advisory_removals, clean, conclusive_removals
 from contracts.judge import (
     build_canary_prompt,
     build_detection_prompt,
+    category_is_wellformed,
     combine_verdict,
     parse_judge_response,
 )
@@ -47,6 +59,7 @@ from contracts.trap import canary_tripped, derive_seed, generate_secret_word
 @dataclass
 class GuardRecord:
     injection_detected: bool
+    judge_reliable: bool
     canary_tripped: bool
     conclusive_tampering: bool
     category: str
@@ -96,12 +109,25 @@ class EvidenceGuard(gl.Contract):
         def validator_fn(leaders_res) -> bool:
             if not isinstance(leaders_res, gl.vm.Return):
                 return False
+            leader = leaders_res.calldata
             my_result = leader_fn()
-            return (
-                my_result["injection_detected"]
-                == leaders_res.calldata["injection_detected"]
-                and my_result["canary_leaked"]
-                == leaders_res.calldata["canary_leaked"]
+
+            # The two load-bearing signals must match exactly.
+            if my_result["injection_detected"] != leader["injection_detected"]:
+                return False
+            if my_result["canary_leaked"] != leader["canary_leaked"]:
+                return False
+
+            # The category is checked for shape, not equality. Two models
+            # can read the same tampered document and reasonably disagree
+            # on whether it is closer to "hidden_instruction" or
+            # "fake_role", and rejecting the leader over that would fail
+            # submissions where every node already agrees an attack is
+            # present. What every node can agree on is that the label is
+            # drawn from the closed vocabulary and is consistent with the
+            # boolean, which is what a caller actually needs to branch on.
+            return category_is_wellformed(
+                leader["category"], leader["injection_detected"]
             )
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
@@ -120,6 +146,7 @@ class EvidenceGuard(gl.Contract):
 
         return GuardRecord(
             injection_detected=verdict.injection_detected,
+            judge_reliable=verdict.judge_reliable,
             canary_tripped=verdict.canary_tripped,
             conclusive_tampering=verdict.conclusive_tampering,
             category=verdict.category,
@@ -137,6 +164,7 @@ class EvidenceGuard(gl.Contract):
         record = self._screen(evidence)
         return {
             "injection_detected": record.injection_detected,
+            "judge_reliable": record.judge_reliable,
             "canary_tripped": record.canary_tripped,
             "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,
@@ -159,6 +187,7 @@ class EvidenceGuard(gl.Contract):
 
         return {
             "injection_detected": record.injection_detected,
+            "judge_reliable": record.judge_reliable,
             "canary_tripped": record.canary_tripped,
             "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,
@@ -171,6 +200,7 @@ class EvidenceGuard(gl.Contract):
         record = self.records[evidence_id]
         return {
             "injection_detected": record.injection_detected,
+            "judge_reliable": record.judge_reliable,
             "canary_tripped": record.canary_tripped,
             "conclusive_tampering": record.conclusive_tampering,
             "category": record.category,

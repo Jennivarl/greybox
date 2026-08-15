@@ -121,18 +121,31 @@ def test_model_can_still_flag_what_the_cleaner_cannot_see():
     assert verdict.category == "hidden_instruction"
 
 
-def test_leaked_canary_fails_closed_and_is_reported_as_unreliable():
+def test_leaked_canary_marks_the_judge_without_condemning_the_evidence():
     """
     A model that obeyed the planted instruction cannot be trusted to have
-    screened this submission properly, so the verdict fails closed. The
-    category must say the judge was unreliable rather than claim the
-    evidence was tampered with, which is a different fact.
+    screened this submission properly. That is a fact about the screener,
+    not about the document, and the two are reported separately.
+
+    This originally failed closed, setting injection_detected on any leak.
+    Bradbury's validator models trip the canary on nearly every call, so
+    that returned "attack" for every clean submission and the boolean
+    stopped meaning anything. The caller now gets both facts and decides
+    whether an unreliable judge is disqualifying for its own use.
     """
     verdict = screen("An ordinary invoice.", model_says_injected=False, model_leaks_canary=True)
-    assert verdict.injection_detected is True
+    assert verdict.injection_detected is False
+    assert verdict.judge_reliable is False
     assert verdict.canary_tripped is True
     assert verdict.category == "judge_unreliable"
     assert verdict.conclusive_tampering is False
+
+
+def test_intact_canary_reports_a_reliable_judge():
+    verdict = screen("An ordinary invoice.", model_says_injected=False, model_leaks_canary=False)
+    assert verdict.injection_detected is False
+    assert verdict.judge_reliable is True
+    assert verdict.category == "none"
 
 
 def test_conclusive_removal_outranks_a_leaked_canary_in_the_category():
